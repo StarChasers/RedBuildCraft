@@ -8,22 +8,20 @@
  */
 package buildcraft.transport.pipes;
 
+import cofh.api.energy.IEnergyHandler;
 import net.minecraft.item.Item;
 import net.minecraft.nbt.NBTTagCompound;
-
+import net.minecraft.tileentity.TileEntity;
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
-
 import net.minecraftforge.common.util.ForgeDirection;
-
 import buildcraft.BuildCraftTransport;
 import buildcraft.api.core.IIconProvider;
 import buildcraft.api.core.SafeTimeTracker;
-import buildcraft.api.mj.MjAPILegacy;
-import buildcraft.api.mj.MjBattery;
 import buildcraft.api.power.IPowerEmitter;
 import buildcraft.api.power.IPowerReceptor;
 import buildcraft.api.power.PowerHandler;
+import buildcraft.api.power.PowerHandler.PerditionCalculator;
 import buildcraft.api.power.PowerHandler.PowerReceiver;
 import buildcraft.api.power.PowerHandler.Type;
 import buildcraft.api.transport.IPipeTile;
@@ -32,23 +30,24 @@ import buildcraft.transport.Pipe;
 import buildcraft.transport.PipeIconProvider;
 import buildcraft.transport.PipeTransportPower;
 
-public class PipePowerWood extends Pipe<PipeTransportPower> implements IPowerReceptor, IPipeTransportPowerHook {
+public class PipePowerWood extends Pipe<PipeTransportPower> implements IPowerReceptor, IEnergyHandler, IPipeTransportPowerHook {
 
 	public final boolean[] powerSources = new boolean[6];
-
+	
 	protected int standardIconIndex = PipeIconProvider.TYPE.PipePowerWood_Standard.ordinal();
 	protected int solidIconIndex = PipeIconProvider.TYPE.PipeAllWood_Solid.ordinal();
 
-	@MjBattery(maxCapacity = 1500, maxReceivedPerCycle = 500, minimumConsumption = 0)
-	private double mjStored = 0;
+	private PowerHandler powerHandler;
 	private final SafeTimeTracker sourcesTracker = new SafeTimeTracker(1);
 	private boolean full;
-
-	private MjAPILegacy powerHandler;
-
+	private int energy, requestedEnergy;
+	
 	public PipePowerWood(Item item) {
 		super(new PipeTransportPower(), item);
 		transport.initFromPipe(getClass());
+		this.powerHandler = new PowerHandler(this, Type.PIPE);
+		powerHandler.configure(0, 500, 1, 1500);
+		powerHandler.setPerdition(new PerditionCalculator(PerditionCalculator.MIN_POWERLOSS));
 	}
 
 	@Override
@@ -69,59 +68,59 @@ public class PipePowerWood extends Pipe<PipeTransportPower> implements IPowerRec
 		if (container.getWorldObj().isRemote) {
 			return;
 		}
+		
+		int sources = 0;
 
-		if (mjStored > 0) {
-			int sources = 0;
+		for (ForgeDirection o : ForgeDirection.VALID_DIRECTIONS) {
+			if (!container.isPipeConnected(o)) {
+				powerSources[o.ordinal()] = false;
+				continue;
+			} else if (isPowerSource(o)) {
+				powerSources[o.ordinal()] = true;
+			}
 
+			if (powerSources[o.ordinal()]) {
+				sources++;
+			}
+		}
+
+		if (sources <= 0) {
+			energy = energy > 50 ? energy - 50 : 0;
+			return;
+		}
+	
+		if (sources > 0) {
+			int energyToUse = requestedEnergy / sources;
+			
 			for (ForgeDirection o : ForgeDirection.VALID_DIRECTIONS) {
-				if (!container.isPipeConnected(o)) {
-					powerSources[o.ordinal()] = false;
-					continue;
-				}
-
-				if (isPowerSource(o)) {
-					powerSources[o.ordinal()] = true;
-				}
-
-				if (powerSources[o.ordinal()]) {
-					sources++;
-				}
+				if (!powerSources[o.ordinal()]) continue;
+				
+				TileEntity tile = container.getTile(o);
+				
+				if(tile instanceof IEnergyHandler) {
+					int energyToRemove = Math.min(15000 - energy, energyToUse);
+					energy += ((IEnergyHandler)tile).extractEnergy(o.getOpposite(), energyToRemove, false);
+				}	
 			}
-
-			if (sources <= 0) {
-				mjStored = mjStored > 5 ? mjStored - 5 : 0;
-				return;
-			}
-
-			double energyToRemove;
-
-			if (mjStored > 40) {
-				energyToRemove = mjStored / 40 + 4;
-			} else if (mjStored > 10) {
-				energyToRemove = mjStored / 10;
-			} else {
-				energyToRemove = 1;
-			}
-			energyToRemove /= sources;
-
-			for (ForgeDirection o : ForgeDirection.VALID_DIRECTIONS) {
-				if (!powerSources[o.ordinal()]) {
-					continue;
-				}
-
-				double energyUsable = mjStored > energyToRemove ? energyToRemove : mjStored;
-				double energySent = transport.receiveEnergy(o, energyUsable);
-
-				if (energySent > 0) {
-					mjStored -= energySent;
+			
+			if (energy > 0) {
+				for (ForgeDirection o : ForgeDirection.VALID_DIRECTIONS) {
+					if (!powerSources[o.ordinal()]) continue;
+					
+					int energyUsable = Math.min(energy, energyToUse);
+					if(energyUsable == 0) continue;
+					
+					energy -= transport.receiveEnergy(o, energyUsable);
 				}
 			}
 		}
+		
+		requestedEnergy = 0;
 	}
 
 	public boolean requestsPower() {
 		if (full) {
-			boolean request = mjStored < 1500 / 2;
+			boolean request = this.powerHandler.getEnergyStored() < 1500 / 2;
 
 			if (request) {
 				full = false;
@@ -130,7 +129,7 @@ public class PipePowerWood extends Pipe<PipeTransportPower> implements IPowerRec
 			return request;
 		}
 
-		full = mjStored >= 1500 - 10;
+		full = this.powerHandler.getEnergyStored() >= 1500 - 10;
 
 		return !full;
 	}
@@ -138,8 +137,8 @@ public class PipePowerWood extends Pipe<PipeTransportPower> implements IPowerRec
 	@Override
 	public void writeToNBT(NBTTagCompound data) {
 		super.writeToNBT(data);
-		data.setDouble("mj", mjStored);
-
+		data.setInteger("requestedEnergy", requestedEnergy);
+		
 		for (int i = 0; i < ForgeDirection.VALID_DIRECTIONS.length; i++) {
 			data.setBoolean("powerSources[" + i + "]", powerSources[i]);
 		}
@@ -148,21 +147,22 @@ public class PipePowerWood extends Pipe<PipeTransportPower> implements IPowerRec
 	@Override
 	public void readFromNBT(NBTTagCompound data) {
 		super.readFromNBT(data);
-		mjStored = data.getDouble("mj");
-
+		requestedEnergy = data.getInteger("requestedEnergy");
+		
 		for (int i = 0; i < ForgeDirection.VALID_DIRECTIONS.length; i++) {
 			powerSources[i] = data.getBoolean("powerSources[" + i + "]");
 		}
 	}
 
 	@Override
-	public double receiveEnergy(ForgeDirection from, double val) {
+	public int receiveEnergy(ForgeDirection from, int val) {
 		return -1;
 	}
 
 	@Override
-	public double requestEnergy(ForgeDirection from, double amount) {
+	public int requestEnergy(ForgeDirection from, int amount) {
 		if (container.getTile(from) instanceof IPipeTile) {
+			requestedEnergy += amount;
 			return amount;
 		} else {
 			return 0;
@@ -170,20 +170,56 @@ public class PipePowerWood extends Pipe<PipeTransportPower> implements IPowerRec
 	}
 
 	public boolean isPowerSource(ForgeDirection from) {
-		return container.getTile(from) instanceof IPowerEmitter;
+		TileEntity tile = container.getTile(from);
+		if(tile instanceof IPowerEmitter) {
+			return true;
+		} else if(tile instanceof IEnergyHandler) {
+			return ((IEnergyHandler)tile).canConnectEnergy(from.getOpposite());
+		} else {
+			return false;
+		}
 	}
 
 	@Override
 	public PowerReceiver getPowerReceiver(ForgeDirection side) {
-		if (powerHandler == null) {
-			powerHandler = MjAPILegacy.from(container, Type.PIPE);
-		}
-
-		return powerHandler.getPowerReceiver(ForgeDirection.UNKNOWN);
+		return powerHandler.getPowerReceiver();
 	}
 
 	@Override
 	public void doWork(PowerHandler workProvider) {
+		energy += (int)Math.round(this.powerHandler.getEnergyStored() * 10);
+		this.powerHandler.setEnergy(0.0);
+		if(energy > 15000) energy = 15000;
+	}
 
+	@Override
+	public boolean canConnectEnergy(ForgeDirection from) {
+		return true;
+	}
+
+	@Override
+	public int receiveEnergy(ForgeDirection from, int maxReceive,
+			boolean simulate) {
+		int maxEnergyToAdd = Math.min(maxReceive, 320);
+		if(!simulate) {
+			energy += maxEnergyToAdd;
+		}
+		return maxEnergyToAdd;
+	}
+	
+	@Override
+	public int extractEnergy(ForgeDirection from, int maxExtract,
+			boolean simulate) {
+		return 0;
+	}
+
+	@Override
+	public int getEnergyStored(ForgeDirection from) {
+		return energy;
+	}
+
+	@Override
+	public int getMaxEnergyStored(ForgeDirection from) {
+		return 15000;
 	}
 }

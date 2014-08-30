@@ -87,7 +87,6 @@ public class BuildCraftEnergy extends BuildCraftMod {
 	public static Block blockOil;
 	public static Block blockFuel;
 	public static Block blockRedPlasma;
-	public static Block blockEnergyConverter;
 	public static Item bucketOil;
 	public static Item bucketFuel;
 	public static Item bucketRedPlasma;
@@ -165,7 +164,6 @@ public class BuildCraftEnergy extends BuildCraftMod {
 
 		engineBlock = new BlockEngine();
 		CoreProxy.proxy.registerBlock(engineBlock, ItemEngine.class);
-
 
 		// Oil and fuel
 		buildcraftFluidOil = new Fluid("oil").setDensity(800).setViscosity(1500);
@@ -342,12 +340,6 @@ public class BuildCraftEnergy extends BuildCraftMod {
 				'g', Blocks.glass, 'G', BuildCraftCore.stoneGearItem, 'p', Blocks.piston);
 		CoreProxy.proxy.addCraftingRecipe(new ItemStack(engineBlock, 1, 2), "www", " g ", "GpG", 'w', Items.iron_ingot,
 				'g', Blocks.glass, 'G', BuildCraftCore.ironGearItem, 'p', Blocks.piston);
-
-		if (blockEnergyConverter != null) {
-			CoreProxy.proxy.addCraftingRecipe(new ItemStack(blockEnergyConverter, 1), "rcr", "sgs", "rcr",
-					'r', Items.redstone, 'c', BuildCraftTransport.pipePowerCobblestone,
-					's', BuildCraftTransport.pipePowerStone, 'g', Blocks.glass);
-		}
 	}
 
 	private int findUnusedBiomeID(String biomeName) {
